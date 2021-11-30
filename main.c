@@ -5,9 +5,11 @@
 #include <netdb.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define MAX_BACKLOG 5
 #define LINE_BUF_SIZE 100
+#define SERVE_DIR "./dist"
 
 typedef struct HTTPRequestHeader {
   char* key;
@@ -27,15 +29,60 @@ void log_exit(char* name) {
   exit(EXIT_FAILURE);
 }
 
-void respond(FILE* out) {
+void render_ok_response_header(FILE* out, const char* content_type) {
   fprintf(out, "HTTP/1.1 200 OK\r\n");
-  fprintf(out, "Content-Type: text/plain\r\n");
+  fprintf(out, "Content-Type: %s\r\n", content_type);
+}
 
-  char* str = "hello";
+void render_ok(FILE* out, const char* str) {
+  render_ok_response_header(out, "text/plain");
+
   fprintf(out, "Content-Length: %d\r\n", (int)strlen(str));
   fprintf(out, "\r\n");
   fprintf(out, "%s", str);
   fflush(out);
+}
+
+void render_not_found(FILE* out) {
+  fprintf(out, "HTTP/1.1 404 NotFound\r\n");
+}
+
+void respond(FILE* out, HTTPRequest* request) {
+  if (strcasecmp(request->method, "GET") != 0) {
+    render_ok(out, "hello");
+  }
+
+  char* path = malloc(LINE_BUF_SIZE * sizeof(char));
+  sprintf(path, "%s%s", SERVE_DIR, request->path);
+  struct stat s;
+  if (lstat(path, &s) < 0) {
+    perror("lstat");
+    log_exit("lstat failed");
+  }
+
+  int size = s.st_size;
+
+  FILE* f = fopen(path, "r");
+  if (f == NULL) {
+    render_not_found(out);
+    return;
+  }
+
+  render_ok_response_header(out, "text/html");
+  fprintf(out, "Content-Length: %d\r\n", size);
+  fputs("\r\n", out);
+
+  char buf[LINE_BUF_SIZE];
+  while (fgets(buf, LINE_BUF_SIZE, f) != NULL) {
+    fputs(buf, out);
+  }
+
+  if (!feof(f)) {
+    log_exit("read file failed");
+  }
+
+  fflush(out);
+
 }
 
 HTTPRequestHeader* read_request_header(FILE* in) {
@@ -86,7 +133,7 @@ HTTPRequestHeader* find_header(HTTPRequest* request, const char* key) {
   return NULL;
 }
 
-void read_request(FILE* in) {
+HTTPRequest* read_request(FILE* in) {
   struct HTTPRequest* request = malloc(sizeof(struct HTTPRequest));
   request->method = malloc(LINE_BUF_SIZE * sizeof(char));
   request->path = malloc(LINE_BUF_SIZE * sizeof(char));
@@ -127,13 +174,13 @@ void read_request(FILE* in) {
     request->body = malloc(request->length * sizeof(char));
     if (fread(request->body, request->length, 1, in) < 0) {
       fprintf(stderr, "request body is too short");
-      return;
+      return NULL;
     }
   } else {
     request->body = NULL;
   }
 
-  print_request(request);
+  return request;
 }
 
 int main(int argc, char* argv[]) {
@@ -177,10 +224,14 @@ int main(int argc, char* argv[]) {
     }
 
     FILE* in = fdopen(fd, "r");
-    read_request(in);
+    HTTPRequest* request = read_request(in);
+    if (request == NULL) {
+      log_exit("invalid request");
+    }
+    print_request(request);
 
     FILE* out = fdopen(fd, "w");
-    respond(out);
+    respond(out, request);
 
     fclose(in);
     fclose(out);
