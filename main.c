@@ -1,3 +1,5 @@
+// todo: multi-thread
+// todo: parse opts
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -186,13 +188,7 @@ HTTPRequest* read_request(FILE* in) {
   return request;
 }
 
-int main(int argc, char* argv[]) {
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock == -1) {
-    fprintf(stderr, "socket() failed\n");
-  }
-
-  char* port = "8008";
+int listen_socket(const char* port) {
   struct addrinfo hints, *res;
 
   memset(&hints, 0, sizeof(struct addrinfo));
@@ -206,16 +202,35 @@ int main(int argc, char* argv[]) {
 
   struct addrinfo *current_addrinfo;
   for (current_addrinfo = res; current_addrinfo != NULL; current_addrinfo = current_addrinfo->ai_next) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+      continue;
+    }
+
     if (bind(sock, current_addrinfo->ai_addr, current_addrinfo->ai_addrlen) < 0) {
+      close(sock);
       continue;
     }
 
     if (listen(sock, MAX_BACKLOG) < 0) {
+      close(sock);
       continue;
     }
+
+    freeaddrinfo(res);
+    return sock;
   }
 
-  freeaddrinfo(res);
+  return -1;
+}
+
+int main(int argc, char* argv[]) {
+  char* port = "8008";
+  int sock = listen_socket(port);
+  if (sock < 0) {
+    log_exit("listen failed");
+  }
+
   for (;;) {
     struct sockaddr addr;
     socklen_t addrlen = sizeof(addr);
@@ -232,6 +247,7 @@ int main(int argc, char* argv[]) {
       log_exit("invalid request");
     }
     print_request(request);
+    printf("\n");
 
     FILE* out = fdopen(fd, "w");
     respond(out, request);
