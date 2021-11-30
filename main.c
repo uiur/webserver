@@ -9,18 +9,18 @@
 #define MAX_BACKLOG 5
 #define LINE_BUF_SIZE 100
 
-struct HTTPRequestHeader {
+typedef struct HTTPRequestHeader {
   char* key;
   char* value;
   struct HTTPRequestHeader* next;
-};
-struct HTTPRequest {
+} HTTPRequestHeader;
+typedef struct HTTPRequest {
   char* method;
   char* path;
   struct HTTPRequestHeader* header;
   int length;
   char* body;
-};
+} HTTPRequest;
 
 void log_exit(char* name) {
   perror(name);
@@ -38,8 +38,8 @@ void respond(FILE* out) {
   fflush(out);
 }
 
-struct HTTPRequestHeader* read_http_request_header(FILE* in) {
-  struct HTTPRequestHeader* header = malloc(sizeof(struct HTTPRequestHeader));
+HTTPRequestHeader* read_request_header(FILE* in) {
+  HTTPRequestHeader* header = malloc(sizeof(struct HTTPRequestHeader));
   header->key = malloc(LINE_BUF_SIZE * sizeof(char));
   header->value = malloc(LINE_BUF_SIZE * sizeof(char));
   header->next = NULL;
@@ -64,15 +64,29 @@ struct HTTPRequestHeader* read_http_request_header(FILE* in) {
   return header;
 }
 
-void print_http_request(struct HTTPRequest* request) {
+void print_request(struct HTTPRequest* request) {
   printf("method:%s\tpath:%s\n", request->method, request->path);
 
   for (struct HTTPRequestHeader* header = request->header; header != NULL; header = header->next) {
     printf("%s:%s\n", header->key, header->value);
   }
+
+  if (request->length > 0) {
+    printf("\n%s\n", request->body);
+  }
 }
 
-void read_http_request(FILE* in) {
+HTTPRequestHeader* find_header(HTTPRequest* request, const char* key) {
+  for (HTTPRequestHeader* header = request->header; header != NULL; header = header->next) {
+    if (strcasecmp(header->key, key) == 0) {
+      return header;
+    }
+  }
+
+  return NULL;
+}
+
+void read_request(FILE* in) {
   struct HTTPRequest* request = malloc(sizeof(struct HTTPRequest));
   request->method = malloc(LINE_BUF_SIZE * sizeof(char));
   request->path = malloc(LINE_BUF_SIZE * sizeof(char));
@@ -93,7 +107,7 @@ void read_http_request(FILE* in) {
   struct HTTPRequestHeader* dummy = malloc(sizeof(struct HTTPRequestHeader));
   struct HTTPRequestHeader* current_header = dummy;
   while (1) {
-    struct HTTPRequestHeader* header = read_http_request_header(in);
+    struct HTTPRequestHeader* header = read_request_header(in);
     if (header == NULL) break;
 
     if (current_header != NULL) current_header->next = header;
@@ -102,7 +116,24 @@ void read_http_request(FILE* in) {
   request->header = dummy->next;
   free(dummy);
 
-  print_http_request(request);
+  HTTPRequestHeader* content_length_header = find_header(request, "Content-Length");
+  if (content_length_header != NULL) {
+    request->length = atoi(content_length_header->value);
+  } else {
+    request->length = 0;
+  }
+
+  if (request->length > 0) {
+    request->body = malloc(request->length * sizeof(char));
+    if (fread(request->body, request->length, 1, in) < 0) {
+      fprintf(stderr, "request body is too short");
+      return;
+    }
+  } else {
+    request->body = NULL;
+  }
+
+  print_request(request);
 }
 
 int main(int argc, char* argv[]) {
@@ -146,7 +177,7 @@ int main(int argc, char* argv[]) {
     }
 
     FILE* in = fdopen(fd, "r");
-    read_http_request(in);
+    read_request(in);
 
     FILE* out = fdopen(fd, "w");
     respond(out);
