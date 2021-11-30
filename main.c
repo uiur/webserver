@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 
 #define MAX_BACKLOG 5
-#define LINE_BUF_SIZE 100
+#define LINE_BUF_SIZE 256
 #define SERVE_DIR "./dist"
 
 typedef struct HTTPRequestHeader {
@@ -44,7 +44,9 @@ void render_ok(FILE* out, const char* str) {
 }
 
 void render_not_found(FILE* out) {
-  fprintf(out, "HTTP/1.1 404 NotFound\r\n");
+  fprintf(out, "HTTP/1.1 404 Not Found\r\n");
+  fprintf(out, "\r\n");
+  fflush(out);
 }
 
 void respond(FILE* out, HTTPRequest* request) {
@@ -52,12 +54,13 @@ void respond(FILE* out, HTTPRequest* request) {
     render_ok(out, "hello");
   }
 
-  char* path = malloc(LINE_BUF_SIZE * sizeof(char));
+  char path[LINE_BUF_SIZE];
   sprintf(path, "%s%s", SERVE_DIR, request->path);
   struct stat s;
   if (lstat(path, &s) < 0) {
     perror("lstat");
-    log_exit("lstat failed");
+    render_not_found(out);
+    return;
   }
 
   int size = s.st_size;
@@ -82,7 +85,7 @@ void respond(FILE* out, HTTPRequest* request) {
   }
 
   fflush(out);
-
+  fclose(f);
 }
 
 HTTPRequestHeader* read_request_header(FILE* in) {
