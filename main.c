@@ -1,5 +1,5 @@
-// todo: multi-thread
 // todo: parse opts
+// todo: daemonize
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -8,9 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
-#define MAX_BACKLOG 5
+#define MAX_BACKLOG 10
 #define LINE_BUF_SIZE 256
+#define WORKER_SIZE 4
+#define BUFFER_MAX_SIZE 10
 #define SERVE_DIR "./dist"
 
 typedef struct HTTPRequestHeader {
@@ -18,6 +21,7 @@ typedef struct HTTPRequestHeader {
   char* value;
   struct HTTPRequestHeader* next;
 } HTTPRequestHeader;
+
 typedef struct HTTPRequest {
   char* method;
   char* path;
@@ -54,6 +58,13 @@ void render_not_found(FILE* out) {
 void respond(FILE* out, HTTPRequest* request) {
   if (strcasecmp(request->method, "GET") != 0) {
     render_ok(out, "hello");
+    return;
+  }
+
+  if (strcasecmp(request->path, "/sleep") == 0) {
+    sleep(1);
+    render_ok(out, "ok");
+    return;
   }
 
   char path[LINE_BUF_SIZE];
@@ -224,11 +235,113 @@ int listen_socket(const char* port) {
   return -1;
 }
 
+
+typedef struct RequestBuffer {
+  int buffer[BUFFER_MAX_SIZE];
+  int head;
+  int tail;
+  int count;
+
+  pthread_mutex_t mutex;
+  pthread_cond_t get_wait;
+  pthread_cond_t put_wait;
+} RequestBuffer;
+
+void request_buffer_init(RequestBuffer* buffer) {
+  buffer->head = 0;
+  buffer->tail = 0;
+  buffer->count = 0;
+  pthread_mutex_init(&(buffer->mutex), NULL);
+  pthread_cond_init(&(buffer->get_wait), NULL);
+  pthread_cond_init(&(buffer->put_wait), NULL);
+}
+
+void request_buffer_put(RequestBuffer* buffer, int value) {
+  buffer->buffer[buffer->tail] = value;
+  buffer->count++;
+  buffer->tail = (buffer->tail + 1) % BUFFER_MAX_SIZE;
+}
+
+int request_buffer_get(RequestBuffer* buffer) {
+  int value = buffer->buffer[buffer->head];
+  buffer->count--;
+  buffer->head = (buffer->head + 1) % BUFFER_MAX_SIZE;
+  return value;
+}
+
+void request_buffer_wait_and_put(RequestBuffer* buffer, int value) {
+  pthread_mutex_lock(&buffer->mutex);
+  while (buffer->count == BUFFER_MAX_SIZE) {
+    pthread_cond_wait(&buffer->put_wait, &buffer->mutex);
+  }
+
+  request_buffer_put(buffer, value);
+  pthread_cond_signal(&buffer->get_wait);
+  pthread_mutex_unlock(&buffer->mutex);
+}
+
+int request_buffer_wait_and_get(RequestBuffer* buffer) {
+  pthread_mutex_lock(&buffer->mutex);
+  while (buffer->count == 0) {
+    pthread_cond_wait(&buffer->get_wait, &buffer->mutex);
+  }
+
+  int request = request_buffer_get(buffer);
+  pthread_cond_signal(&buffer->put_wait);
+  pthread_mutex_unlock(&buffer->mutex);
+
+  return request;
+}
+
+
+RequestBuffer raw_request_buffer;
+
+void* worker(void* arg) {
+  int num = *((int*)arg);
+  RequestBuffer* request_buffer = &raw_request_buffer;
+
+  printf("worker %d: ready\n", num);
+
+  while (1) {
+    int fd = request_buffer_wait_and_get(request_buffer);
+
+    FILE* in = fdopen(fd, "r");
+    HTTPRequest* request = read_request(in);
+    if (request == NULL) {
+      log_exit("invalid request");
+    }
+    printf("worker %d:\n", num);
+    print_request(request);
+    printf("\n");
+
+    FILE* out = fdopen(fd, "w");
+    respond(out, request);
+
+    fclose(in);
+    fclose(out);
+    close(fd);
+  }
+}
+
 int main(int argc, char* argv[]) {
   char* port = "8008";
   int sock = listen_socket(port);
   if (sock < 0) {
     log_exit("listen failed");
+  }
+
+  RequestBuffer* request_buffer = &raw_request_buffer;
+  request_buffer_init(request_buffer);
+
+  pthread_t* threads = malloc(WORKER_SIZE * sizeof(pthread_t));
+  for (int i = 0; i < WORKER_SIZE; i++) {
+    int* arg = malloc(sizeof(int));
+    arg[0] = i;
+    int rc = pthread_create(&threads[i], NULL, worker, arg);
+    if (rc < 0) {
+      perror(NULL);
+      log_exit("thread create");
+    }
   }
 
   for (;;) {
@@ -241,19 +354,7 @@ int main(int argc, char* argv[]) {
       log_exit("accept");
     }
 
-    FILE* in = fdopen(fd, "r");
-    HTTPRequest* request = read_request(in);
-    if (request == NULL) {
-      log_exit("invalid request");
-    }
-    print_request(request);
-    printf("\n");
-
-    FILE* out = fdopen(fd, "w");
-    respond(out, request);
-
-    fclose(in);
-    fclose(out);
+    request_buffer_wait_and_put(request_buffer, fd);
   }
 
   close(sock);
