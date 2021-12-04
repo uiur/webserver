@@ -1,4 +1,3 @@
-// todo: daemonize
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -328,26 +327,50 @@ void* worker(void* arg) {
   }
 }
 
+void become_daemon() {
+  int n;
+  freopen("/dev/null", "r", stdin);
+  freopen("/dev/null", "w", stdout);
+  freopen("/dev/null", "w", stderr);
+  n = fork();
+
+  if (n < 0) log_exit("fork() failed");
+  if (n != 0) _exit(0);
+
+  if (setsid() < 0) log_exit("set_sid() failed");
+}
+
 static struct option longopts[] = {
   {"port", optional_argument, NULL, 'p'},
+  {"daemon", no_argument, NULL, 'd'},
   {"help", no_argument, NULL, 'h'},
   {0, 0, 0, 0}
 };
 
 int main(int argc, char* argv[]) {
   int opt;
+  int daemon_mode = 0;
   char* port = "8008";
 
-  while ((opt = getopt_long(argc, argv, "p:h", longopts, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "p:hd", longopts, NULL)) != -1) {
     switch (opt) {
       case 'p':
         port = optarg;
         break;
 
+      case 'd':
+        daemon_mode = 1;
+        break;
+
       case 'h':
         fprintf(stderr, "Usage %s [-p PORT]\n", argv[0]);
         exit(0);
+
     }
+  }
+
+  if (daemon_mode) {
+    become_daemon();
   }
 
   printf("Listening on port %s\n", port);
