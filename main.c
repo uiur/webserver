@@ -213,7 +213,12 @@ int listen_socket(const char* port) {
 
   struct addrinfo *current_addrinfo;
   for (current_addrinfo = res; current_addrinfo != NULL; current_addrinfo = current_addrinfo->ai_next) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(current_addrinfo->ai_family, current_addrinfo->ai_socktype, current_addrinfo->ai_protocol);
+
+    // ref: https://stackoverflow.com/questions/5106674/error-address-already-in-use-while-binding-socket-with-address-but-the-port-num
+    int option = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
+
     if (sock == -1) {
       continue;
     }
