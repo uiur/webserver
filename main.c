@@ -1,4 +1,3 @@
-// todo: parse opts
 // todo: daemonize
 #include <stdio.h>
 #include <sys/socket.h>
@@ -9,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <getopt.h>
 
 #define MAX_BACKLOG 10
 #define LINE_BUF_SIZE 256
@@ -328,8 +328,29 @@ void* worker(void* arg) {
   }
 }
 
+static struct option longopts[] = {
+  {"port", optional_argument, NULL, 'p'},
+  {"help", no_argument, NULL, 'h'},
+  {0, 0, 0, 0}
+};
+
 int main(int argc, char* argv[]) {
+  int opt;
   char* port = "8008";
+
+  while ((opt = getopt_long(argc, argv, "p:h", longopts, NULL)) != -1) {
+    switch (opt) {
+      case 'p':
+        port = optarg;
+        break;
+
+      case 'h':
+        fprintf(stderr, "Usage %s [-p PORT]\n", argv[0]);
+        exit(0);
+    }
+  }
+
+  printf("Listening on port %s\n", port);
   int sock = listen_socket(port);
   if (sock < 0) {
     log_exit("listen failed");
